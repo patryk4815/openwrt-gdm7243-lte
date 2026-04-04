@@ -1,0 +1,14 @@
+{
+	"luci-app-gctd": {
+		"description": "Grant access to GCT LTE modem management",
+		"read": {
+			"ubus": {
+				"gctd": ["status", "signal"]
+			},
+			"uci": ["gctd"]
+		},
+		"write": {
+			"uci": ["gctd"]
+		}
+	}
+}

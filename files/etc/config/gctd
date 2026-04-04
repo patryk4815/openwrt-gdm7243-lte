@@ -1,0 +1,7 @@
+config gctd 'main'
+    option mode 'netifd'
+    option modem_ip '169.254.0.1'
+    option at_port '7788'
+    option keepalive_port '4667'
+    option keepalive_interval '5'
+    option monitor_interval '15'

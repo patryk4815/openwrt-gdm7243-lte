@@ -1,0 +1,17 @@
+#!/bin/sh
+
+case "$1" in
+	list)
+		echo '{"status":{},"signal":{}}'
+		;;
+	call)
+		case "$2" in
+			status)
+				/usr/sbin/gctd status-json 2>/dev/null || echo '{"error":"gctd failed"}'
+				;;
+			signal)
+				/usr/sbin/gctd signal-json 2>/dev/null || echo '{"error":"gctd failed"}'
+				;;
+		esac
+		;;
+esac

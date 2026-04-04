@@ -1,0 +1,25 @@
+{
+	"admin/status/gctd": {
+		"title": "LTE Modem",
+		"order": 25,
+		"action": {
+			"type": "firstchild"
+		}
+	},
+	"admin/status/gctd/status": {
+		"title": "Status",
+		"order": 1,
+		"action": {
+			"type": "view",
+			"path": "gctd/status"
+		}
+	},
+	"admin/status/gctd/signal": {
+		"title": "Signal",
+		"order": 2,
+		"action": {
+			"type": "view",
+			"path": "gctd/signal"
+		}
+	}
+}
