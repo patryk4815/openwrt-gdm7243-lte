@@ -226,6 +226,18 @@ config forwarding
     option dest 'wan'
 ```
 
+### IPv6
+
+The GDM7243 modem supports IPv6. To use IPv6, set the PDP type to `ipv6` or `ipv4v6`:
+
+```sh
+uci set network.lte.pdptype='ipv6'
+uci set network.lte.apn='internetipv6'   # APN may differ for IPv6 (check your operator)
+uci set network.lte.ip6assign='128'
+uci commit network
+ifdown lte && ifup lte
+```
+
 ## File structure
 
 ```
