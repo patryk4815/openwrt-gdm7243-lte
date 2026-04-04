@@ -69,6 +69,9 @@ zig build -Dtarget=mipsel-linux-musl --release=small
 ```sh
 ROUTER=root@192.168.1.1
 
+# Create directories
+ssh $ROUTER "mkdir -p /usr/libexec/rpcd /usr/share/luci/menu.d /usr/share/rpcd/acl.d /www/luci-static/resources/protocol /www/luci-static/resources/view/gctd"
+
 # Daemon binary
 scp -O zig-out/bin/gctd $ROUTER:/usr/sbin/gctd
 
@@ -81,7 +84,6 @@ scp -O files/www/luci-static/resources/protocol/gctd.js $ROUTER:/www/luci-static
 scp -O files/usr/libexec/rpcd/gctd $ROUTER:/usr/libexec/rpcd/gctd
 scp -O files/usr/share/luci/menu.d/luci-app-gctd.json $ROUTER:/usr/share/luci/menu.d/luci-app-gctd.json
 scp -O files/usr/share/rpcd/acl.d/luci-app-gctd.json $ROUTER:/usr/share/rpcd/acl.d/luci-app-gctd.json
-ssh $ROUTER "mkdir -p /www/luci-static/resources/view/gctd"
 scp -O files/www/luci-static/resources/view/gctd/*.js $ROUTER:/www/luci-static/resources/view/gctd/
 
 # Set permissions
