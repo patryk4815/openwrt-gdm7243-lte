@@ -25,7 +25,6 @@ pub fn run() void {
     while (keep_running.load(.acquire)) {
         updateSignal();
         updateRegistration();
-        updateNetLed();
         std.Thread.sleep(interval_ns);
     }
 }
@@ -44,16 +43,13 @@ fn updateSignal() void {
 
 fn updateRegistration() void {
     const status = commands.queryRegistration() catch {
-        led.set("green:lte", false);
+        led.set("green:internet", false);
         return;
     };
-    led.set("green:lte", status == .home or status == .roaming);
-}
-
-fn updateNetLed() void {
+    const registered = status == .home or status == .roaming;
     const name = iface_buf[0..iface_len];
-    const result = exec(&.{ "ip", "addr", "show", "dev", name });
-    led.set("green:net", result);
+    const has_ip = exec(&.{ "ip", "addr", "show", "dev", name });
+    led.set("green:internet", registered and has_ip);
 }
 
 fn exec(argv: []const []const u8) bool {
