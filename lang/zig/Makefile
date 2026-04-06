@@ -23,7 +23,7 @@ ifeq ($(ZIG_HOST_ARCH),arm64)
   ZIG_HOST_ARCH:=aarch64
 endif
 
-ZIG_TAR:=zig-$(ZIG_HOST_OS)-$(ZIG_HOST_ARCH)-$(PKG_VERSION).tar.xz
+ZIG_TAR:=zig-$(ZIG_HOST_ARCH)-$(ZIG_HOST_OS)-$(PKG_VERSION).tar.xz
 ZIG_URL:=https://ziglang.org/download/$(PKG_VERSION)/$(ZIG_TAR)
 
 define Package/zig
