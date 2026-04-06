@@ -7,6 +7,7 @@ const monitor = @import("monitor.zig");
 const commands = @import("commands.zig");
 const led = @import("led.zig");
 const signal = @import("signal.zig");
+const sms = @import("sms.zig");
 const log = std.log.scoped(.gctd);
 
 const CONFIG_PATH = "/etc/config/gctd";
@@ -62,6 +63,8 @@ pub fn main() !void {
         return cmdFreqRange(&args);
     } else if (std.mem.eql(u8, cmd, "unlock")) {
         return cmdUnlock();
+    } else if (std.mem.eql(u8, cmd, "sms")) {
+        return cmdSms(&args);
     } else if (std.mem.eql(u8, cmd, "help") or std.mem.eql(u8, cmd, "--help") or std.mem.eql(u8, cmd, "-h")) {
         printUsage();
     } else {
@@ -87,7 +90,10 @@ fn printUsage() void {
         \\  gctd freqrange BAND ST ED   Set EARFCN range for band
         \\  gctd freqrange              Show current frequency ranges
         \\  gctd unlock                 Remove all cell locks
-        \\  gctd help         Show this help
+        \\  gctd sms                    List all SMS messages
+        \\  gctd sms delete <idx>       Delete SMS by index
+        \\  gctd sms delete all         Delete all SMS messages
+        \\  gctd help                   Show this help
         \\
     , .{});
 }
@@ -442,6 +448,61 @@ fn cmdUnlock() void {
     if (ok) writeOut("All locks removed\n", .{}) else writeOut("Failed\n", .{});
 }
 
+fn cmdSms(args: *std.process.ArgIterator) void {
+    const cfg = loadConfig();
+    setupAt(&cfg);
+
+    const subcmd = args.next();
+
+    if (subcmd) |sub| {
+        if (std.mem.eql(u8, sub, "delete")) {
+            const target = args.next() orelse {
+                writeErr("Usage: gctd sms delete <index|all>\n", .{});
+                return;
+            };
+            if (std.mem.eql(u8, target, "all")) {
+                const ok = sms.deleteAllSms() catch |e| {
+                    writeErr("Error: {s}\n", .{@errorName(e)});
+                    return;
+                };
+                if (ok) writeOut("All SMS deleted\n", .{}) else writeOut("Failed\n", .{});
+            } else {
+                const idx = std.fmt.parseInt(u16, target, 10) catch {
+                    writeErr("Invalid index: {s}\n", .{target});
+                    return;
+                };
+                const ok = sms.deleteSms(idx) catch |e| {
+                    writeErr("Error: {s}\n", .{@errorName(e)});
+                    return;
+                };
+                if (ok) writeOut("SMS {d} deleted\n", .{idx}) else writeOut("Failed\n", .{});
+            }
+            return;
+        }
+    }
+
+    // Default: list all SMS (streaming — no buffer limit)
+    var count: usize = 0;
+    const ok = sms.streamSmsList(&count, &struct {
+        fn cb(msg: *const sms.Sms, ctx: *usize) void {
+            ctx.* += 1;
+            writeOut("--- SMS #{d} [{s}] ---\n", .{ msg.index, msg.getStatus() });
+            if (msg.sender_len > 0) writeOut("From: {s}\n", .{msg.getSender()});
+            if (msg.timestamp_len > 0) writeOut("Date: {s}\n", .{msg.getTimestamp()});
+            if (msg.text_len > 0) writeOut("{s}\n", .{msg.getText()});
+            writeOut("\n", .{});
+        }
+    }.cb) catch |e| {
+        writeErr("Error: {s}\n", .{@errorName(e)});
+        return;
+    };
+    _ = ok;
+
+    if (count == 0) {
+        writeOut("No SMS messages\n", .{});
+    }
+}
+
 // --- Daemon mode ---
 
 var daemon_cfg: ?*config_mod.Config = null;
@@ -526,7 +587,7 @@ fn daemonMode(args: *std.process.ArgIterator) void {
     };
     _ = mon_thread;
 
-    // Main loop: reconnect if connection drops
+    // Main loop: monitor connection and reconnect if needed
     while (daemon_running.load(.acquire)) {
         // Sleep in 1s increments so SIGTERM is handled quickly
         var sleep_count: u32 = 0;
@@ -536,15 +597,48 @@ fn daemonMode(args: *std.process.ArgIterator) void {
 
         if (!daemon_running.load(.acquire)) break;
 
-        // Check if still connected by querying CEREG
-        if (commands.queryRegistration()) |status| {
-            if (status != .home and status != .roaming) {
-                log.warn("Lost registration ({s}), reconnecting...", .{@tagName(status)});
+        // 1. Check modem reachability
+        if (!keepalive.modem_alive.load(.acquire)) {
+            log.warn("Modem unreachable, waiting for keepalive...", .{});
+            continue;
+        }
+
+        // 2. Check registration
+        const status = commands.queryRegistration() catch {
+            log.warn("AT+CEREG query failed, will retry...", .{});
+            continue;
+        };
+
+        switch (status) {
+            .home, .roaming => {
+                // 3. Registered — check if PDP context is still active
+                const active = commands.queryContextActive(cfg.cid) catch {
+                    continue;
+                };
+                if (!active) {
+                    log.warn("PDP context lost, reactivating...", .{});
+                    connect.reactivateContext(&cfg) catch |e| {
+                        log.err("Reactivation failed: {s}, full reconnect...", .{@errorName(e)});
+                        connect.connectLte(&cfg) catch |e2| {
+                            log.err("Reconnection failed: {s}", .{@errorName(e2)});
+                        };
+                    };
+                }
+            },
+            .searching => {
+                // Modem is searching, don't interfere
+                log.info("Modem searching for network...", .{});
+            },
+            .denied => {
+                log.err("Registration denied by network", .{});
+            },
+            .not_registered, .unknown => {
+                log.warn("Not registered ({s}), reconnecting...", .{@tagName(status)});
                 connect.connectLte(&cfg) catch |e| {
                     log.err("Reconnection failed: {s}", .{@errorName(e)});
                 };
-            }
-        } else |_| {}
+            },
+        }
     }
 
     // Graceful shutdown

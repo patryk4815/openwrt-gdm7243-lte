@@ -39,19 +39,20 @@ pub fn run() void {
 
     while (keep_running.load(.acquire)) {
         // Send "IDU ALIVE"
-        _ = posix.sendto(sock, msg, 0, &modem_addr.any, modem_addr.getOsSockLen()) catch {
+        _ = posix.sendto(sock, msg, 0, &modem_addr.any, modem_addr.getOsSockLen()) catch |e| {
             fail_count += 1;
+            log.warn("keepalive sendto failed: {s} (fail {d}/{d})", .{ @errorName(e), fail_count, max_fails });
             std.Thread.sleep(interval_ns);
             continue;
         };
 
         // Wait for "ODU ALIVE"
         var recv_buf: [64]u8 = undefined;
-        const n = posix.recv(sock, &recv_buf, 0) catch {
+        const n = posix.recv(sock, &recv_buf, 0) catch |e| {
             fail_count += 1;
             if (fail_count >= max_fails) {
                 if (modem_alive.load(.acquire)) {
-                    log.warn("Modem not responding to keepalive", .{});
+                    log.warn("keepalive: modem not responding (fail {d}/{d}): {s}", .{ fail_count, max_fails, @errorName(e) });
                 }
                 modem_alive.store(false, .release);
             }
@@ -67,6 +68,7 @@ pub fn run() void {
             fail_count = 0;
         } else {
             fail_count += 1;
+            log.warn("keepalive: unexpected response ({d} bytes, fail {d}/{d})", .{ n, fail_count, max_fails });
         }
 
         std.Thread.sleep(interval_ns);

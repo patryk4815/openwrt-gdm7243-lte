@@ -126,6 +126,84 @@ pub fn sendWithTimeout(cmd: []const u8, timeout_s: u32) AtError!AtResponse {
     return AtError.Timeout;
 }
 
+/// Send AT command and stream response lines to callback.
+/// Calls cb for each complete line (between \r\n). Stops at OK or ERROR.
+/// Uses a small rolling buffer — no limit on total response size.
+pub fn sendStreaming(cmd: []const u8, timeout_s: u32, ctx: anytype, cb: fn ([]const u8, @TypeOf(ctx)) void) AtError!bool {
+    const addr = net.Address.initIp4(modem_ip, modem_port);
+
+    const sock = posix.socket(posix.AF.INET, posix.SOCK.STREAM, 0) catch {
+        return AtError.ConnectFailed;
+    };
+    defer posix.close(sock);
+
+    const tv = posix.timeval{
+        .sec = @intCast(timeout_s),
+        .usec = 0,
+    };
+    posix.setsockopt(sock, posix.SOL.SOCKET, posix.SO.RCVTIMEO, std.mem.asBytes(&tv)) catch {};
+    posix.setsockopt(sock, posix.SOL.SOCKET, posix.SO.SNDTIMEO, std.mem.asBytes(&tv)) catch {};
+
+    posix.connect(sock, &addr.any, addr.getOsSockLen()) catch {
+        return AtError.ConnectFailed;
+    };
+
+    // Send command
+    var send_buf: [256]u8 = undefined;
+    const send_len = std.fmt.bufPrint(&send_buf, "{s}\r", .{cmd}) catch {
+        return AtError.SendFailed;
+    };
+    _ = posix.send(sock, send_len, 0) catch {
+        return AtError.SendFailed;
+    };
+
+    // Read and stream line by line
+    var buf: [2048]u8 = undefined;
+    var buf_len: usize = 0;
+    var ok_result = false;
+
+    while (true) {
+        const n = posix.recv(sock, buf[buf_len..], 0) catch break;
+        if (n == 0) break;
+        buf_len += n;
+
+        // Process complete lines
+        while (true) {
+            const line_end = std.mem.indexOf(u8, buf[0..buf_len], "\r\n") orelse break;
+            const line = buf[0..line_end];
+
+            if (std.mem.eql(u8, line, "OK")) {
+                ok_result = true;
+                return ok_result;
+            }
+            if (std.mem.eql(u8, line, "ERROR")) {
+                return false;
+            }
+
+            if (line.len > 0) {
+                cb(line, ctx);
+            }
+
+            // Shift remaining data
+            const consumed = line_end + 2;
+            if (consumed < buf_len) {
+                std.mem.copyForwards(u8, buf[0 .. buf_len - consumed], buf[consumed..buf_len]);
+            }
+            buf_len -= consumed;
+        }
+
+        // Prevent buffer overflow — flush if nearly full
+        if (buf_len >= buf.len - 256) {
+            if (buf_len > 0) {
+                cb(buf[0..buf_len], ctx);
+            }
+            buf_len = 0;
+        }
+    }
+
+    return ok_result;
+}
+
 /// Split comma-separated fields. Returns slices into the input.
 pub fn splitFields(data: []const u8, out: *[16][]const u8) usize {
     var count: usize = 0;

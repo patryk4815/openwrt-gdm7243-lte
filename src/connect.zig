@@ -15,17 +15,24 @@ pub const ConnectError = error{
     NetworkSetupFailed,
 };
 
-/// Run the full LTE connection sequence
+/// Run the LTE connection sequence
+/// Fast path: if context is already active (e.g. after link recovery), skip to CGCONTRDP
+/// Full path: SIM check → PDP config → CFUN → CGATT → CEREG → CGACT → CGCONTRDP
 pub fn connectLte(cfg: *const config_mod.Config) ConnectError!void {
     log.info("Starting LTE connection (APN: {s}, CID: {d})", .{ cfg.getApn(), cfg.cid });
 
     // 1. Wait for modem alive (keepalive thread must be running)
     waitForModem() catch return ConnectError.ModemNotAlive;
 
-    // 2. Check SIM
+    // 2. Fast path — check if context is already active (link recovery, modem didn't restart LTE)
+    if (commands.queryContextActive(cfg.cid) catch false) {
+        log.info("Context already active, fast reconnect", .{});
+        return setupFromContext(cfg);
+    }
+
+    // 3. Full connection sequence
     checkSim(cfg) catch |e| return e;
 
-    // 3. Configure PDP context (APN, protocol, auth)
     commands.configureContext(cfg.cid, cfg.pdptype, cfg.getApn()) catch {
         log.warn("AT+CGDCONT failed to send", .{});
     };
@@ -35,37 +42,56 @@ pub fn connectLte(cfg: *const config_mod.Config) ConnectError!void {
         };
     }
 
-    // 4. Set full functionality
     commands.setFullFunctionality() catch {
         log.warn("AT+CFUN=1 failed to send", .{});
     };
     std.Thread.sleep(std.time.ns_per_s);
 
-    // 5. Attach to network
     commands.attach() catch {
         log.warn("AT+CGATT=1 failed to send", .{});
     };
     std.Thread.sleep(std.time.ns_per_s);
 
-    // 6. Wait for registration
     waitForRegistration(cfg) catch return ConnectError.RegistrationFailed;
 
-    // 7. Activate PDP context
     commands.activateContext(cfg.cid) catch return ConnectError.ActivationFailed;
     std.Thread.sleep(std.time.ns_per_s);
 
-    // 7. Get connection details
+    return setupFromContext(cfg);
+}
+
+/// Get connection details from modem and configure network interface
+fn setupFromContext(cfg: *const config_mod.Config) ConnectError!void {
     var info = commands.queryConnectionDetails(cfg.cid) catch return ConnectError.NoIpAssigned;
 
-    // 8. Setup IP/route on interface
     switch (cfg.mode) {
         .netifd => setupNetworkNetifd(cfg, &info) catch return ConnectError.NetworkSetupFailed,
         .ip => setupNetworkIp(cfg, &info) catch return ConnectError.NetworkSetupFailed,
     }
 
     log.info("LTE connected: IP={s}/{d} GW={s} DNS={s},{s} MTU={d}", .{
-        info.getIp(),  info.prefix, info.getGateway(),
+        info.getIp(), info.prefix, info.getGateway(),
         info.getDns1(), info.getDns2(), info.mtu,
+    });
+}
+
+/// Lightweight reconnect — only reactivate PDP context and reconfigure network
+/// Used when modem is registered but context dropped (no full CFUN/CGATT/CEREG cycle)
+pub fn reactivateContext(cfg: *const config_mod.Config) ConnectError!void {
+    log.info("Reactivating PDP context (CID: {d})", .{cfg.cid});
+
+    commands.activateContext(cfg.cid) catch return ConnectError.ActivationFailed;
+    std.Thread.sleep(std.time.ns_per_s);
+
+    var info = commands.queryConnectionDetails(cfg.cid) catch return ConnectError.NoIpAssigned;
+
+    switch (cfg.mode) {
+        .netifd => setupNetworkNetifd(cfg, &info) catch return ConnectError.NetworkSetupFailed,
+        .ip => setupNetworkIp(cfg, &info) catch return ConnectError.NetworkSetupFailed,
+    }
+
+    log.info("PDP context reactivated: IP={s}/{d} GW={s}", .{
+        info.getIp(), info.prefix, info.getGateway(),
     });
 }
 
@@ -84,8 +110,16 @@ fn waitForModem() !void {
 }
 
 fn checkSim(cfg: *const config_mod.Config) ConnectError!void {
-    const status = commands.querySimStatus() catch {
-        log.err("Failed to check SIM status", .{});
+    // Retry SIM check — modem may still be initializing after restart
+    var sim_attempts: u32 = 0;
+    const status = while (sim_attempts < 5) : (sim_attempts += 1) {
+        break commands.querySimStatus() catch {
+            log.warn("SIM status query failed, retrying ({d}/5)...", .{sim_attempts + 1});
+            std.Thread.sleep(2 * std.time.ns_per_s);
+            continue;
+        };
+    } else {
+        log.err("Failed to check SIM status after 5 attempts", .{});
         return ConnectError.SimError;
     };
 

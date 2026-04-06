@@ -92,10 +92,27 @@ pub fn activateContext(cid: u8) !void {
     if (!resp.ok) log.warn("CGACT returned error (may already be active)", .{});
 }
 
+pub fn queryContextActive(cid: u8) !bool {
+    const resp = try at.send("AT+CGACT?");
+    // Response: +CGACT: 1,1\r\n+CGACT: 2,0\r\n...
+    // Find our CID and check if active (1)
+    var cid_buf: [16]u8 = undefined;
+    const needle = std.fmt.bufPrint(&cid_buf, "+CGACT: {d},", .{cid}) catch return error.ParseError;
+    const data = resp.raw[0..resp.raw_len];
+    if (std.mem.indexOf(u8, data, needle)) |pos| {
+        const val_pos = pos + needle.len;
+        if (val_pos < data.len) {
+            return data[val_pos] == '1';
+        }
+    }
+    return false;
+}
+
 pub fn deactivateContext(cid: u8) !void {
-    var cmd_buf: [64]u8 = undefined;
-    const cmd = std.fmt.bufPrint(&cmd_buf, "AT+CGACT=0,{d}", .{cid}) catch return error.ParseError;
-    _ = try at.send(cmd);
+    // AT+CGACT=0,N is rejected by GDM7243 — use AT+CGATT=0 (detach) instead
+    _ = cid;
+    const resp = try at.send("AT+CGATT=0");
+    if (!resp.ok) log.warn("AT+CGATT=0 returned error", .{});
 }
 
 // --- Connection Details ---

@@ -137,6 +137,9 @@ gctd lockscell E P [E P ...]      lock secondary cell(s)
 gctd freqrange [B S E ...]        set/show frequency ranges
 gctd freqrange clear              clear all frequency ranges
 gctd unlock                       remove all cell locks
+gctd sms                          list all SMS messages
+gctd sms delete <idx>             delete SMS by index
+gctd sms delete all               delete all SMS messages
 ```
 
 ### Example output
