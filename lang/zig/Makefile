@@ -5,7 +5,7 @@ PKG_VERSION:=0.15.2
 PKG_RELEASE:=1
 PKG_LICENSE:=MIT
 
-PKG_BUILD_DIR:=$(BUILD_DIR_HOST)/zig-$(PKG_VERSION)
+HOST_BUILD_DIR:=$(BUILD_DIR_HOST)/zig-$(PKG_VERSION)
 
 include $(INCLUDE_DIR)/host-build.mk
 include $(INCLUDE_DIR)/package.mk
@@ -18,7 +18,6 @@ ifeq ($(shell uname -s),Darwin)
   ZIG_HOST_OS:=macos
 endif
 
-# Map host arch names
 ifeq ($(ZIG_HOST_ARCH),arm64)
   ZIG_HOST_ARCH:=aarch64
 endif
@@ -29,22 +28,21 @@ ZIG_URL:=https://ziglang.org/download/$(PKG_VERSION)/$(ZIG_TAR)
 define Package/zig
   SECTION:=lang
   CATEGORY:=Languages
-  TITLE:=Zig programming language compiler
+  TITLE:=Zig programming language compiler (host tool)
   URL:=https://ziglang.org
 endef
 
 define Package/zig/description
-  Zig is a general-purpose programming language and build system.
-  This package provides the Zig compiler as a host tool for
-  cross-compiling Zig programs for OpenWrt targets.
+  Zig compiler as a host tool for cross-compiling Zig programs for OpenWrt targets.
 endef
 
 define Host/Prepare
-	mkdir -p $(PKG_BUILD_DIR)
-	if [ ! -f $(DL_DIR)/$(ZIG_TAR) ]; then \
-		wget -O $(DL_DIR)/$(ZIG_TAR) $(ZIG_URL); \
-	fi
-	tar -xf $(DL_DIR)/$(ZIG_TAR) -C $(PKG_BUILD_DIR) --strip-components=1
+	mkdir -p $(HOST_BUILD_DIR)
+	[ -f $(DL_DIR)/$(ZIG_TAR) ] || wget -O $(DL_DIR)/$(ZIG_TAR) $(ZIG_URL)
+	tar -xf $(DL_DIR)/$(ZIG_TAR) -C $(HOST_BUILD_DIR) --strip-components=1
+endef
+
+define Host/Configure
 endef
 
 define Host/Compile
@@ -52,8 +50,8 @@ endef
 
 define Host/Install
 	$(INSTALL_DIR) $(STAGING_DIR_HOSTPKG)/bin
-	$(INSTALL_BIN) $(PKG_BUILD_DIR)/zig $(STAGING_DIR_HOSTPKG)/bin/zig
-	$(CP) $(PKG_BUILD_DIR)/lib $(STAGING_DIR_HOSTPKG)/lib/zig
+	$(INSTALL_BIN) $(HOST_BUILD_DIR)/zig $(STAGING_DIR_HOSTPKG)/bin/zig
+	$(CP) $(HOST_BUILD_DIR)/lib $(STAGING_DIR_HOSTPKG)/lib/zig
 endef
 
 define Host/Clean
