@@ -54,9 +54,29 @@ The GDM7243 modem communicates over an internal Ethernet link (not USB):
 - **LuCI web interface** — status, signal monitoring, configuration via interface edit
 - **Single static binary** (~130KB), no dependencies
 
-## Quick start
+## Installation
 
-### 1. Build
+### Option A: OpenWrt feed (recommended)
+
+Add the feed to your OpenWrt build:
+
+```sh
+echo "src-git gctd https://github.com/patryk4815/openwrt-gdm7243-lte.git" >> feeds.conf
+./scripts/feeds update gctd
+./scripts/feeds install -a -p gctd
+make menuconfig
+# Select: Network → WWAN → gctd
+# Select: LuCI → 3. Applications → luci-app-gctd
+make package/gctd/compile
+make package/luci-proto-gctd/compile
+make package/luci-app-gctd/compile
+```
+
+Packages will be in `bin/packages/*/gctd/`.
+
+### Option B: Manual install
+
+#### 1. Build
 
 Requires [Zig](https://ziglang.org/) 0.15.2
 
@@ -64,7 +84,7 @@ Requires [Zig](https://ziglang.org/) 0.15.2
 zig build -Dtarget=mipsel-linux-musl --release=small
 ```
 
-### 2. Install on router
+#### 2. Install on router
 
 ```sh
 ROUTER=root@192.168.1.1
@@ -76,21 +96,21 @@ ssh $ROUTER "mkdir -p /usr/libexec/rpcd /usr/share/luci/menu.d /usr/share/rpcd/a
 scp -O zig-out/bin/gctd $ROUTER:/usr/sbin/gctd
 
 # netifd protocol handler + config
-scp -O files/lib/netifd/proto/gctd.sh $ROUTER:/lib/netifd/proto/gctd.sh
-scp -O files/etc/config/gctd $ROUTER:/etc/config/gctd
+scp -O net/gctd/files/gctd.sh $ROUTER:/lib/netifd/proto/gctd.sh
+scp -O net/gctd/files/gctd.config $ROUTER:/etc/config/gctd
+scp -O net/gctd/files/gctd.rpcd $ROUTER:/usr/libexec/rpcd/gctd
 
 # LuCI integration (optional)
-scp -O files/www/luci-static/resources/protocol/gctd.js $ROUTER:/www/luci-static/resources/protocol/gctd.js
-scp -O files/usr/libexec/rpcd/gctd $ROUTER:/usr/libexec/rpcd/gctd
-scp -O files/usr/share/luci/menu.d/luci-app-gctd.json $ROUTER:/usr/share/luci/menu.d/luci-app-gctd.json
-scp -O files/usr/share/rpcd/acl.d/luci-app-gctd.json $ROUTER:/usr/share/rpcd/acl.d/luci-app-gctd.json
-scp -O files/www/luci-static/resources/view/gctd/*.js $ROUTER:/www/luci-static/resources/view/gctd/
+scp -O luci/luci-proto-gctd/htdocs/luci-static/resources/protocol/gctd.js $ROUTER:/www/luci-static/resources/protocol/gctd.js
+scp -O luci/luci-app-gctd/htdocs/luci-static/resources/view/gctd/*.js $ROUTER:/www/luci-static/resources/view/gctd/
+scp -O luci/luci-app-gctd/root/usr/share/luci/menu.d/luci-app-gctd.json $ROUTER:/usr/share/luci/menu.d/luci-app-gctd.json
+scp -O luci/luci-app-gctd/root/usr/share/rpcd/acl.d/luci-app-gctd.json $ROUTER:/usr/share/rpcd/acl.d/luci-app-gctd.json
 
 # Set permissions
 ssh $ROUTER "chmod +x /usr/sbin/gctd /lib/netifd/proto/gctd.sh /usr/libexec/rpcd/gctd"
 ```
 
-### 3. Configure
+#### 3. Configure
 
 ```sh
 # Static IP for modem communication
@@ -113,7 +133,7 @@ uci commit
 /etc/init.d/network restart
 ```
 
-### 4. Test
+#### 4. Test
 
 ```sh
 gctd at "AT"              # should print "OK"
@@ -245,18 +265,23 @@ ifdown lte && ifup lte
 
 ```
 ├── src/                        Zig source code
-├── files/                      OpenWrt overlay (copy to router root /)
-│   ├── etc/config/gctd                           UCI config (modem settings)
-│   ├── lib/netifd/proto/gctd.sh                  netifd protocol handler
-│   ├── usr/libexec/rpcd/gctd                     rpcd plugin (ubus API for LuCI)
-│   ├── usr/share/luci/menu.d/luci-app-gctd.json  LuCI menu entries
-│   ├── usr/share/rpcd/acl.d/luci-app-gctd.json   LuCI ACL permissions
-│   ├── www/luci-static/resources/protocol/gctd.js LuCI protocol handler
-│   └── www/luci-static/resources/view/gctd/       LuCI views
-│       ├── status.js                              connection status page
-│       └── signal.js                              signal & CA page
+├── build.zig                   Zig build config
+├── net/gctd/                   OpenWrt package: daemon
+│   ├── Makefile
+│   └── files/
+│       ├── gctd.sh             netifd protocol handler
+│       ├── gctd.config         UCI config (/etc/config/gctd)
+│       └── gctd.rpcd           rpcd plugin (ubus API for LuCI)
+├── luci/luci-proto-gctd/       OpenWrt package: LuCI protocol handler
+│   ├── Makefile
+│   └── htdocs/.../protocol/gctd.js
+├── luci/luci-app-gctd/         OpenWrt package: LuCI status/signal views
+│   ├── Makefile
+│   ├── htdocs/.../view/gctd/{status,signal}.js
+│   └── root/usr/share/{luci/menu.d,rpcd/acl.d}/...
+├── lang/zig/                   OpenWrt package: Zig host toolchain
+│   └── Makefile
 ├── screens/                    Screenshots
-├── build.zig
 ├── README.md
 └── LICENSE
 ```
