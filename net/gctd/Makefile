@@ -15,7 +15,7 @@ define Package/gctd
   CATEGORY:=Network
   SUBMENU:=WWAN
   TITLE:=GCT GDM7243 LTE modem daemon
-  DEPENDS:=+kmod-8021q
+  DEPENDS:=
   URL:=https://github.com/patryk4815/openwrt-gdm7243-lte
 endef
 
