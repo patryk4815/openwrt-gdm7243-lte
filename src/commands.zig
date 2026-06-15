@@ -44,6 +44,20 @@ pub fn setFullFunctionality() !void {
     if (!resp.ok) log.warn("AT+CFUN=1 returned error", .{});
 }
 
+/// Hard reboot the modem via its Linux shell (AT%SYSCMD="reboot").
+/// The modem usually drops the AT connection before replying once it starts
+/// rebooting, so a timeout/partial reply is treated as success. Only a failure
+/// to reach the modem at all (connect/send) propagates as an error.
+pub fn rebootModem() !void {
+    _ = at.sendWithTimeout("AT%SYSCMD=\"reboot\"", 5) catch |e| switch (e) {
+        error.Timeout, error.ModemError => {
+            log.info("reboot command sent (no clean reply, modem rebooting)", .{});
+            return;
+        },
+        else => return e,
+    };
+}
+
 pub fn attach() !void {
     const resp = try at.send("AT+CGATT=1");
     if (!resp.ok) log.warn("AT+CGATT=1 returned error", .{});

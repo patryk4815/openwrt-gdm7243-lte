@@ -74,28 +74,28 @@ pub fn main() !void {
 }
 
 fn printUsage() void {
-    writeOut(
-        \\gctd — GCT GDM7243 LTE modem daemon for ZTE MF258
+    const help =
+        \\gctd - GCT GDM7243 LTE modem daemon for ZTE MF258
         \\
         \\Usage:
-        \\  gctd daemon        Run as daemon (keepalive + connect + monitor)
-        \\  gctd at "CMD"     Send AT command to modem
-        \\  gctd status       Show modem status (signal, registration, IP)
-        \\  gctd status-json  Same as status, but JSON output (for LuCI)
-        \\  gctd signal       Detailed signal info (human-readable)
-        \\  gctd signal-json  Detailed signal info + carrier aggregation (JSON)
-        \\  gctd bands                  Show supported LTE bands
-        \\  gctd lockcell E P [E P ...]  Lock primary cell(s) (earfcn+pci pairs)
-        \\  gctd lockscell E P [E P ..] Lock secondary cell(s) for CA
-        \\  gctd freqrange BAND ST ED   Set EARFCN range for band
-        \\  gctd freqrange              Show current frequency ranges
-        \\  gctd unlock                 Remove all cell locks
-        \\  gctd sms                    List all SMS messages
-        \\  gctd sms delete <idx>       Delete SMS by index
-        \\  gctd sms delete all         Delete all SMS messages
-        \\  gctd help                   Show this help
+        \\  gctd daemon                  Run as daemon
+        \\  gctd at "CMD"                Send AT command
+        \\  gctd status                  Show modem status
+        \\  gctd status-json             Status as JSON
+        \\  gctd signal                  Detailed signal info
+        \\  gctd signal-json             Signal info as JSON
+        \\  gctd bands                   Show supported bands
+        \\  gctd lockcell E P [E P ..]   Lock primary cell(s)
+        \\  gctd lockscell E P [E P ..]  Lock secondary cell(s)
+        \\  gctd freqrange [B ST ED]     Set/show freq range
+        \\  gctd unlock                  Remove all locks
+        \\  gctd sms                     List SMS messages
+        \\  gctd sms delete <idx|all>    Delete SMS
+        \\  gctd help                    Show this help
         \\
-    , .{});
+        \\
+    ;
+    std.fs.File.stdout().writeAll(help) catch {};
 }
 
 fn loadConfig() config_mod.Config {
@@ -113,11 +113,16 @@ fn cmdAt(args: *std.process.ArgIterator) void {
     setupAt(&cfg);
 
     const cmd = args.next() orelse {
-        writeErr("Usage: gctd at \"AT+COMMAND\"\n", .{});
+        writeErr("Usage: gctd at \"AT+COMMAND\" [timeout_s]\n", .{});
         return;
     };
 
-    const resp = at.send(cmd) catch |e| {
+    const timeout: u32 = if (args.next()) |t|
+        std.fmt.parseInt(u32, t, 10) catch 5
+    else
+        5;
+
+    const resp = at.sendWithTimeout(cmd, timeout) catch |e| {
         writeErr("Error: {s}\n", .{@errorName(e)});
         return;
     };
@@ -587,11 +592,17 @@ fn daemonMode(args: *std.process.ArgIterator) void {
     };
     _ = mon_thread;
 
+    // Hard-reboot the modem if keepalive stays dead too long (mirrors OEM ilte_mon).
+    const loop_period_s: u32 = 30;
+    const reboot_after_s: u32 = 300; // 5 minutes
+    const reboot_threshold: u32 = reboot_after_s / loop_period_s;
+    var unreachable_count: u32 = 0;
+
     // Main loop: monitor connection and reconnect if needed
     while (daemon_running.load(.acquire)) {
         // Sleep in 1s increments so SIGTERM is handled quickly
         var sleep_count: u32 = 0;
-        while (sleep_count < 30 and daemon_running.load(.acquire)) : (sleep_count += 1) {
+        while (sleep_count < loop_period_s and daemon_running.load(.acquire)) : (sleep_count += 1) {
             std.Thread.sleep(std.time.ns_per_s);
         }
 
@@ -599,9 +610,20 @@ fn daemonMode(args: *std.process.ArgIterator) void {
 
         // 1. Check modem reachability
         if (!keepalive.modem_alive.load(.acquire)) {
-            log.warn("Modem unreachable, waiting for keepalive...", .{});
+            unreachable_count += 1;
+            const down_s = unreachable_count * loop_period_s;
+            log.warn("Modem unreachable for {d}s ({d}/{d} before hard reboot)", .{ down_s, unreachable_count, reboot_threshold });
+            if (unreachable_count >= reboot_threshold) {
+                log.err("Modem unreachable for {d}s — hard reboot via AT%SYSCMD=\"reboot\"", .{down_s});
+                commands.rebootModem() catch |e| {
+                    log.err("Modem reboot failed: {s}", .{@errorName(e)});
+                };
+                unreachable_count = 0;
+            }
             continue;
         }
+        // Modem responded again — reset the fail counter
+        unreachable_count = 0;
 
         // 2. Check registration
         const status = commands.queryRegistration() catch {
