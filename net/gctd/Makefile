@@ -1,7 +1,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=gctd
-PKG_VERSION:=1.2.0
+PKG_VERSION:=1.2.1
 PKG_RELEASE:=1
 PKG_LICENSE:=MIT
 PKG_MAINTAINER:=Patryk Sondej <patryk.sondej@gmail.com>
@@ -80,10 +80,10 @@ define Build/Compile
 	$(if $(ZIG_TARGET),,$(error gctd: unsupported ARCH '$(ARCH)'))
 	cd $(PKG_BUILD_DIR) && \
 	$(STAGING_DIR_HOSTPKG)/bin/zig build \
+		--zig-lib=$(STAGING_DIR_HOSTPKG)/lib/zig \
 		-Dtarget=$(ZIG_TARGET) \
 		$(if $(ZIG_CPU),-Dcpu=$(ZIG_CPU)) \
-		--release=small \
-		--zig-lib-dir $(STAGING_DIR_HOSTPKG)/lib/zig
+		--release=small
 endef
 
 define Package/gctd/install
