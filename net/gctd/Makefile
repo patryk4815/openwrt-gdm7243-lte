@@ -15,7 +15,7 @@ define Package/gctd
   CATEGORY:=Network
   SUBMENU:=WWAN
   TITLE:=GCT GDM7243 LTE modem daemon
-  DEPENDS:=
+  DEPENDS:=@(mipsel||mips||mips64||aarch64||arm||i386||x86_64||riscv64) @!arm_v5
   URL:=https://github.com/patryk4815/openwrt-gdm7243-lte
 endef
 
@@ -30,16 +30,44 @@ define Package/gctd/conffiles
 /etc/config/gctd
 endef
 
-# Map OpenWrt target to Zig target triple
-ZIG_TARGET:=mipsel-linux-musl
+# Map OpenWrt target to Zig target triple (and CPU model where Zig's
+# baseline would be too new for some OpenWrt subtargets)
+ZIG_TARGET:=
+ZIG_CPU:=
+ifeq ($(ARCH),mipsel)
+  ZIG_TARGET:=mipsel-linux-musl
+endif
+ifeq ($(ARCH),mips)
+  ZIG_TARGET:=mips-linux-musl
+endif
+ifeq ($(ARCH),mips64)
+  ZIG_TARGET:=mips64-linux-muslabi64
+endif
 ifeq ($(ARCH),aarch64)
   ZIG_TARGET:=aarch64-linux-musl
 endif
 ifeq ($(ARCH),arm)
-  ZIG_TARGET:=arm-linux-musleabihf
+  ifeq ($(CONFIG_SOFT_FLOAT),y)
+    ZIG_TARGET:=arm-linux-musleabi
+  else
+    ZIG_TARGET:=arm-linux-musleabihf
+  endif
+  ifneq ($(filter cortex-a5 cortex-a7 cortex-a8 cortex-a9 cortex-a15 cortex-a53 cortex-a72 arm1176jzf-s mpcore,$(CPU_TYPE)),)
+    ZIG_CPU:=$(subst -,_,$(CPU_TYPE))
+  endif
+endif
+ifeq ($(ARCH),i386)
+  ZIG_TARGET:=x86-linux-musl
+  # Zig's x86 baseline is pentium4 (SSE2); legacy/geode subtargets are older
+  ifneq ($(filter pentium-mmx geode,$(CPU_TYPE)),)
+    ZIG_CPU:=$(subst -,_,$(CPU_TYPE))
+  endif
 endif
 ifeq ($(ARCH),x86_64)
   ZIG_TARGET:=x86_64-linux-musl
+endif
+ifeq ($(ARCH),riscv64)
+  ZIG_TARGET:=riscv64-linux-musl
 endif
 
 define Build/Prepare
@@ -49,9 +77,11 @@ define Build/Prepare
 endef
 
 define Build/Compile
+	$(if $(ZIG_TARGET),,$(error gctd: unsupported ARCH '$(ARCH)'))
 	cd $(PKG_BUILD_DIR) && \
 	$(STAGING_DIR_HOSTPKG)/bin/zig build \
 		-Dtarget=$(ZIG_TARGET) \
+		$(if $(ZIG_CPU),-Dcpu=$(ZIG_CPU)) \
 		--release=small \
 		--zig-lib-dir $(STAGING_DIR_HOSTPKG)/lib/zig
 endef

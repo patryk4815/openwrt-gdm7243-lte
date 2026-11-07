@@ -565,7 +565,7 @@ fn daemonMode(args: *std.process.ArgIterator) void {
     // Install signal handlers for graceful shutdown
     const sa = std.posix.Sigaction{
         .handler = .{ .handler = handleSignal },
-        .mask = .{ 0, 0, 0, 0 },
+        .mask = std.posix.sigemptyset(),
         .flags = 0,
     };
     std.posix.sigaction(std.posix.SIG.TERM, &sa, null);
