@@ -1,4 +1,5 @@
 const std = @import("std");
+const sys = @import("sys.zig");
 const commands = @import("commands.zig");
 const led = @import("led.zig");
 const log = std.log.scoped(.monitor);
@@ -25,7 +26,7 @@ pub fn run() void {
     while (keep_running.load(.acquire)) {
         updateSignal();
         updateRegistration();
-        std.Thread.sleep(interval_ns);
+        sys.sleepNs(interval_ns);
     }
 }
 
@@ -53,11 +54,6 @@ fn updateRegistration() void {
 }
 
 fn exec(argv: []const []const u8) bool {
-    var child = std.process.Child.init(argv, std.heap.page_allocator);
-    child.stdin_behavior = .Close;
-    child.stdout_behavior = .Close;
-    child.stderr_behavior = .Close;
-    child.spawn() catch return false;
-    const result = child.wait() catch return false;
-    return result.Exited == 0;
+    const code = sys.exec(argv) catch return false;
+    return code == 0;
 }

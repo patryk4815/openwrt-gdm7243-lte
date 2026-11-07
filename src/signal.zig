@@ -69,13 +69,13 @@ pub const CellPair = struct {
 /// Lock primary cell(s). Format: AT%GLOCKCELL=<numCell>,<earfcn1>,<pci1>[,<earfcn2>,<pci2>...]
 pub fn lockCell(pairs: []const CellPair) !bool {
     var buf: [512]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
-    const w = fbs.writer();
+    var fbs: std.Io.Writer = .fixed(&buf);
+    const w = &fbs;
     w.print("AT%GLOCKCELL={d}", .{pairs.len}) catch return error.ParseError;
     for (pairs) |p| {
         w.print(",{s},{s}", .{ p.earfcn, p.pci }) catch return error.ParseError;
     }
-    const cmd = buf[0..fbs.pos];
+    const cmd = buf[0..fbs.end];
     const resp = try at.send(cmd);
     return resp.ok;
 }
@@ -88,13 +88,13 @@ pub fn unlockCell() !bool {
 /// Lock secondary cell(s) for CA. Format: AT%GLOCKSCELL=<numCell>,<earfcn1>,<pci1>[,...]
 pub fn lockSCell(pairs: []const CellPair) !bool {
     var buf: [512]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
-    const w = fbs.writer();
+    var fbs: std.Io.Writer = .fixed(&buf);
+    const w = &fbs;
     w.print("AT%GLOCKSCELL={d}", .{pairs.len}) catch return error.ParseError;
     for (pairs) |p| {
         w.print(",{s},{s}", .{ p.earfcn, p.pci }) catch return error.ParseError;
     }
-    const cmd = buf[0..fbs.pos];
+    const cmd = buf[0..fbs.end];
     const resp = try at.send(cmd);
     return resp.ok;
 }
@@ -113,14 +113,14 @@ pub const FreqRange = struct {
 /// Set frequency range(s). Format: AT%GFREQRNG=<band1>,<st1>,<ed1>[,<band2>,<st2>,<ed2>,...]
 pub fn setFreqRange(ranges: []const FreqRange) !bool {
     var buf: [512]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
-    const w = fbs.writer();
+    var fbs: std.Io.Writer = .fixed(&buf);
+    const w = &fbs;
     w.writeAll("AT%GFREQRNG=") catch return error.ParseError;
     for (ranges, 0..) |r, i| {
         if (i > 0) w.writeAll(",") catch return error.ParseError;
         w.print("{s},{s},{s}", .{ r.band, r.start_earfcn, r.end_earfcn }) catch return error.ParseError;
     }
-    const cmd = buf[0..fbs.pos];
+    const cmd = buf[0..fbs.end];
     const resp = try at.send(cmd);
     return resp.ok;
 }
@@ -170,14 +170,14 @@ pub fn clearFreqRange() !bool {
     if (info.count == 0) return true;
 
     var buf: [512]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
-    const w = fbs.writer();
+    var fbs: std.Io.Writer = .fixed(&buf);
+    const w = &fbs;
     w.writeAll("AT%GFREQRNG=") catch return error.ParseError;
     for (info.bands[0..info.count], 0..) |band, i| {
         if (i > 0) w.writeAll(",") catch return error.ParseError;
         w.print("{d},0,0", .{band}) catch return error.ParseError;
     }
-    const cmd = buf[0..fbs.pos];
+    const cmd = buf[0..fbs.end];
     const clear_resp = try at.send(cmd);
     return clear_resp.ok;
 }
@@ -440,8 +440,8 @@ fn parseParenValue(data: []const u8, key: []const u8) ?i32 {
 // --- JSON output ---
 
 pub fn writeSignalJson(buf: []u8, status: *const ConnStatus, carriers: *const [3]Carrier) usize {
-    var fbs = std.io.fixedBufferStream(buf);
-    const w = fbs.writer();
+    var fbs: std.Io.Writer = .fixed(buf);
+    const w = &fbs;
 
     w.print("{{\"temperature\":{d}", .{status.temperature}) catch return 0;
     w.print(",\"band\":{d}", .{status.band}) catch return 0;
@@ -476,7 +476,7 @@ pub fn writeSignalJson(buf: []u8, status: *const ConnStatus, carriers: *const [3
     }
     w.writeAll("]}") catch return 0;
 
-    return fbs.pos;
+    return fbs.end;
 }
 
 fn writeFixed(w: anytype, prefix: []const u8, val_x10: i32) !void {

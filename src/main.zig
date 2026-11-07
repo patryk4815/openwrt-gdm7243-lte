@@ -1,4 +1,5 @@
 const std = @import("std");
+const sys = @import("sys.zig");
 const config_mod = @import("config.zig");
 const at = @import("at.zig");
 const keepalive = @import("keepalive.zig");
@@ -14,22 +15,24 @@ const CONFIG_PATH = "/etc/config/gctd";
 
 pub const std_options = std.Options{
     .log_level = .info,
+    .logFn = sys.logFn,
 };
 
 fn writeOut(comptime fmt: []const u8, args: anytype) void {
     var buf: [1024]u8 = undefined;
     const msg = std.fmt.bufPrint(&buf, fmt, args) catch return;
-    std.fs.File.stdout().writeAll(msg) catch {};
+    sys.writeStdout(msg);
 }
 
 fn writeErr(comptime fmt: []const u8, args: anytype) void {
     var buf: [256]u8 = undefined;
     const msg = std.fmt.bufPrint(&buf, fmt, args) catch return;
-    std.fs.File.stderr().writeAll(msg) catch {};
+    sys.writeStderr(msg);
 }
 
-pub fn main() !void {
-    var args = std.process.args();
+pub fn main(init: std.process.Init.Minimal) void {
+    sys.envp = init.environ.block.slice.ptr;
+    var args = init.args.iterate();
     _ = args.skip(); // skip argv[0]
 
     const subcmd = args.next();
@@ -95,7 +98,7 @@ fn printUsage() void {
         \\
         \\
     ;
-    std.fs.File.stdout().writeAll(help) catch {};
+    sys.writeStdout(help);
 }
 
 fn loadConfig() config_mod.Config {
@@ -108,7 +111,7 @@ fn setupAt(cfg: *const config_mod.Config) void {
 
 // --- Subcommands ---
 
-fn cmdAt(args: *std.process.ArgIterator) void {
+fn cmdAt(args: *std.process.Args.Iterator) void {
     const cfg = loadConfig();
     setupAt(&cfg);
 
@@ -127,7 +130,7 @@ fn cmdAt(args: *std.process.ArgIterator) void {
         return;
     };
 
-    std.fs.File.stdout().writeAll(resp.raw[0..resp.raw_len]) catch {};
+    sys.writeStdout(resp.raw[0..resp.raw_len]);
 }
 
 fn cmdStatus() void {
@@ -300,8 +303,8 @@ fn cmdSignalJson() void {
     var buf: [4096]u8 = undefined;
     const len = signal.writeSignalJson(&buf, &status, &carriers);
     if (len > 0) {
-        std.fs.File.stdout().writeAll(buf[0..len]) catch {};
-        std.fs.File.stdout().writeAll("\n") catch {};
+        sys.writeStdout(buf[0..len]);
+        sys.writeStdout("\n");
     }
 }
 
@@ -326,7 +329,7 @@ fn cmdBands() void {
 
 const CellPairList = struct { pairs: [16]signal.CellPair = undefined, count: usize = 0 };
 
-fn parseCellPairs(args: *std.process.ArgIterator) CellPairList {
+fn parseCellPairs(args: *std.process.Args.Iterator) CellPairList {
     var result = CellPairList{};
     while (result.count < 16) {
         const earfcn = args.next() orelse break;
@@ -340,7 +343,7 @@ fn parseCellPairs(args: *std.process.ArgIterator) CellPairList {
     return result;
 }
 
-fn cmdLockCell(args: *std.process.ArgIterator) void {
+fn cmdLockCell(args: *std.process.Args.Iterator) void {
     const cfg = loadConfig();
     setupAt(&cfg);
     const parsed = parseCellPairs(args);
@@ -355,7 +358,7 @@ fn cmdLockCell(args: *std.process.ArgIterator) void {
     if (ok) writeOut("Locked {d} cell(s)\n", .{parsed.count}) else writeOut("Failed\n", .{});
 }
 
-fn cmdLockSCell(args: *std.process.ArgIterator) void {
+fn cmdLockSCell(args: *std.process.Args.Iterator) void {
     const cfg = loadConfig();
     setupAt(&cfg);
     const parsed = parseCellPairs(args);
@@ -370,7 +373,7 @@ fn cmdLockSCell(args: *std.process.ArgIterator) void {
     if (ok) writeOut("Locked {d} secondary cell(s)\n", .{parsed.count}) else writeOut("Failed\n", .{});
 }
 
-fn cmdFreqRange(args: *std.process.ArgIterator) void {
+fn cmdFreqRange(args: *std.process.Args.Iterator) void {
     const cfg = loadConfig();
     setupAt(&cfg);
 
@@ -453,7 +456,7 @@ fn cmdUnlock() void {
     if (ok) writeOut("All locks removed\n", .{}) else writeOut("Failed\n", .{});
 }
 
-fn cmdSms(args: *std.process.ArgIterator) void {
+fn cmdSms(args: *std.process.Args.Iterator) void {
     const cfg = loadConfig();
     setupAt(&cfg);
 
@@ -513,11 +516,11 @@ fn cmdSms(args: *std.process.ArgIterator) void {
 var daemon_cfg: ?*config_mod.Config = null;
 var daemon_running: std.atomic.Value(bool) = std.atomic.Value(bool).init(true);
 
-fn handleSignal(_: c_int) callconv(.c) void {
+fn handleSignal(_: std.posix.SIG) callconv(.c) void {
     daemon_running.store(false, .release);
 }
 
-fn daemonMode(args: *std.process.ArgIterator) void {
+fn daemonMode(args: *std.process.Args.Iterator) void {
     var cfg = loadConfig();
 
     // First two positional args: interface device (from proto handler)
@@ -603,7 +606,7 @@ fn daemonMode(args: *std.process.ArgIterator) void {
         // Sleep in 1s increments so SIGTERM is handled quickly
         var sleep_count: u32 = 0;
         while (sleep_count < loop_period_s and daemon_running.load(.acquire)) : (sleep_count += 1) {
-            std.Thread.sleep(std.time.ns_per_s);
+            sys.sleepNs(std.time.ns_per_s);
         }
 
         if (!daemon_running.load(.acquire)) break;

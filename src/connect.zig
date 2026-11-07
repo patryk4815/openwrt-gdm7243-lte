@@ -1,4 +1,5 @@
 const std = @import("std");
+const sys = @import("sys.zig");
 const keepalive = @import("keepalive.zig");
 const config_mod = @import("config.zig");
 const commands = @import("commands.zig");
@@ -45,17 +46,17 @@ pub fn connectLte(cfg: *const config_mod.Config) ConnectError!void {
     commands.setFullFunctionality() catch {
         log.warn("AT+CFUN=1 failed to send", .{});
     };
-    std.Thread.sleep(std.time.ns_per_s);
+    sys.sleepNs(std.time.ns_per_s);
 
     commands.attach() catch {
         log.warn("AT+CGATT=1 failed to send", .{});
     };
-    std.Thread.sleep(std.time.ns_per_s);
+    sys.sleepNs(std.time.ns_per_s);
 
     waitForRegistration(cfg) catch return ConnectError.RegistrationFailed;
 
     commands.activateContext(cfg.cid) catch return ConnectError.ActivationFailed;
-    std.Thread.sleep(std.time.ns_per_s);
+    sys.sleepNs(std.time.ns_per_s);
 
     return setupFromContext(cfg);
 }
@@ -81,7 +82,7 @@ pub fn reactivateContext(cfg: *const config_mod.Config) ConnectError!void {
     log.info("Reactivating PDP context (CID: {d})", .{cfg.cid});
 
     commands.activateContext(cfg.cid) catch return ConnectError.ActivationFailed;
-    std.Thread.sleep(std.time.ns_per_s);
+    sys.sleepNs(std.time.ns_per_s);
 
     var info = commands.queryConnectionDetails(cfg.cid) catch return ConnectError.NoIpAssigned;
 
@@ -103,7 +104,7 @@ fn waitForModem() !void {
             log.info("Modem is alive", .{});
             return;
         }
-        std.Thread.sleep(std.time.ns_per_s);
+        sys.sleepNs(std.time.ns_per_s);
     }
     log.err("Modem not responding after 30s", .{});
     return error.Timeout;
@@ -115,7 +116,7 @@ fn checkSim(cfg: *const config_mod.Config) ConnectError!void {
     const status = while (sim_attempts < 5) : (sim_attempts += 1) {
         break commands.querySimStatus() catch {
             log.warn("SIM status query failed, retrying ({d}/5)...", .{sim_attempts + 1});
-            std.Thread.sleep(2 * std.time.ns_per_s);
+            sys.sleepNs(2 * std.time.ns_per_s);
             continue;
         };
     } else {
@@ -149,7 +150,7 @@ fn checkSim(cfg: *const config_mod.Config) ConnectError!void {
                 return ConnectError.PinRequired;
             };
             log.info("PIN accepted", .{});
-            std.Thread.sleep(2 * std.time.ns_per_s);
+            sys.sleepNs(2 * std.time.ns_per_s);
         },
         .puk_required => {
             log.err("SIM PUK required — manual intervention needed", .{});
@@ -167,7 +168,7 @@ fn waitForRegistration(cfg: *const config_mod.Config) !void {
     var attempts: u32 = 0;
     while (attempts < 30) : (attempts += 1) {
         const status = commands.queryRegistration() catch {
-            std.Thread.sleep(2 * std.time.ns_per_s);
+            sys.sleepNs(2 * std.time.ns_per_s);
             continue;
         };
 
@@ -191,7 +192,7 @@ fn waitForRegistration(cfg: *const config_mod.Config) !void {
             },
             .not_registered, .unknown => {},
         }
-        std.Thread.sleep(2 * std.time.ns_per_s);
+        sys.sleepNs(2 * std.time.ns_per_s);
     }
     log.err("Registration timeout", .{});
     return error.Timeout;
@@ -295,8 +296,8 @@ fn setupNetworkIp(cfg: *const config_mod.Config, info: *const commands.Connectio
 
 /// Build prefix CIDR from IPv6 address (e.g. "2a00:f41:18d7:ba80::37:3f57:cc01" /64 → "2a00:f41:18d7:ba80::/64")
 fn prefixCidr(buf: *[80]u8, info: *const commands.ConnectionDetails) []const u8 {
-    const addr = std.net.Address.parseIp6(info.getIp(), 0) catch return "::/64";
-    var bytes = addr.in6.sa.addr;
+    const addr = std.Io.net.Ip6Address.parse(info.getIp(), 0) catch return "::/64";
+    var bytes = addr.bytes;
 
     // Zero out host bits
     const pb = info.prefix / 8;
@@ -312,9 +313,9 @@ fn prefixCidr(buf: *[80]u8, info: *const commands.ConnectionDetails) []const u8 
 
     var ip_buf: [64]u8 = undefined;
     const ip_len = commands.bytesToIpv6Hex(&bytes, &ip_buf);
-    var fbs = std.io.fixedBufferStream(buf);
-    fbs.writer().print("{s}/{d}", .{ ip_buf[0..ip_len], info.prefix }) catch return "::/64";
-    return buf[0..fbs.pos];
+    var fbs: std.Io.Writer = .fixed(buf);
+    fbs.print("{s}/{d}", .{ ip_buf[0..ip_len], info.prefix }) catch return "::/64";
+    return buf[0..fbs.end];
 }
 
 fn writeDns(info: *const commands.ConnectionDetails) !void {
@@ -322,9 +323,9 @@ fn writeDns(info: *const commands.ConnectionDetails) !void {
     const dir_path = "/tmp/resolv.conf.d";
 
     // Ensure directory exists
-    std.fs.makeDirAbsolute(dir_path) catch {};
+    sys.makeDir(dir_path) catch {};
 
-    const file = std.fs.createFileAbsolute(path, .{}) catch return;
+    const file = sys.File.open(path, .create) catch return;
     defer file.close();
 
     var buf: [256]u8 = undefined;
@@ -343,14 +344,9 @@ fn writeDns(info: *const commands.ConnectionDetails) !void {
 }
 
 fn exec(argv: []const []const u8) !void {
-    var child = std.process.Child.init(argv, std.heap.page_allocator);
-    child.stdin_behavior = .Close;
-    child.stdout_behavior = .Close;
-    child.stderr_behavior = .Close;
-    try child.spawn();
-    const result = try child.wait();
-    if (result.Exited != 0) {
-        log.warn("Command exited with {d}", .{result.Exited});
+    const code = try sys.exec(argv);
+    if (code != 0) {
+        log.warn("Command {s} exited with {?d}", .{ argv[0], code });
     }
 }
 

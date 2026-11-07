@@ -94,7 +94,7 @@ pub fn configureAuth(cid: u8, auth: config_mod.AuthType, username: []const u8, p
     const cmd = if (auth == .none)
         std.fmt.bufPrint(&cmd_buf, "AT+CGAUTH={d},0", .{cid}) catch return error.ParseError
     else
-        std.fmt.bufPrint(&cmd_buf, "AT+CGAUTH={d},{d},\"{s}\",\"{s}\"", .{ cid, @intFromEnum(auth), username, password }) catch return error.ParseError;
+        std.fmt.bufPrint(&cmd_buf, "AT+CGAUTH={d},{d},\"{s}\",\"{s}\"", .{ cid, @backingInt(auth), username, password }) catch return error.ParseError;
     const resp = try at.send(cmd);
     if (!resp.ok) log.warn("AT+CGAUTH returned error", .{});
 }
@@ -276,7 +276,7 @@ pub fn queryAddress(cid: u8, buf: []u8) ![]const u8 {
                 if (c == '.') dot_count += 1;
             }
             if (dot_count >= 15) {
-                var octets: [16]u8 = .{0} ** 16;
+                var octets: [16]u8 = @splat(0);
                 var iter = std.mem.splitScalar(u8, addr, '.');
                 var i: usize = 0;
                 while (iter.next()) |octet_str| {
@@ -315,7 +315,7 @@ fn copyFieldAutoIpv6(src: []const u8, dst: *[64]u8, len: *usize, is_ipv6: bool) 
             if (c == '.') dot_count += 1;
         }
         if (dot_count >= 15) {
-            var octets: [16]u8 = .{0} ** 16;
+            var octets: [16]u8 = @splat(0);
             var iter = std.mem.splitScalar(u8, src, '.');
             var i: usize = 0;
             while (iter.next()) |octet_str| {
@@ -362,7 +362,7 @@ fn parseIpMaskToDetails(input: []const u8, details: *ConnectionDetails) void {
     if (dot_count >= 31) {
         // IPv6 byte-decimal: 16 bytes IP + 16 bytes mask = 32 octets
         details.is_ipv6 = true;
-        var octets: [32]u8 = .{0} ** 32;
+        var octets: [32]u8 = @splat(0);
         var iter = std.mem.splitScalar(u8, input, '.');
         var i: usize = 0;
         while (iter.next()) |octet_str| {
@@ -377,7 +377,7 @@ fn parseIpMaskToDetails(input: []const u8, details: *ConnectionDetails) void {
     } else if (dot_count >= 15) {
         // IPv6 byte-decimal without mask: 16 octets
         details.is_ipv6 = true;
-        var octets: [16]u8 = .{0} ** 16;
+        var octets: [16]u8 = @splat(0);
         var iter = std.mem.splitScalar(u8, input, '.');
         var i: usize = 0;
         while (iter.next()) |octet_str| {
@@ -441,8 +441,8 @@ pub fn bytesToIpv6Hex(bytes: *const [16]u8, out: *[64]u8) usize {
     }
     if (best_len == 0) best_start = 8; // no zeros to compress
 
-    var fbs = std.io.fixedBufferStream(out);
-    const w = fbs.writer();
+    var fbs: std.Io.Writer = .fixed(out);
+    const w = &fbs;
 
     var i: usize = 0;
     var need_sep = false;
@@ -459,7 +459,7 @@ pub fn bytesToIpv6Hex(bytes: *const [16]u8, out: *[64]u8) usize {
         i += 1;
     }
 
-    return fbs.pos;
+    return fbs.end;
 }
 
 /// Convert 16 mask bytes to CIDR prefix length

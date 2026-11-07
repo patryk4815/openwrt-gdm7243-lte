@@ -1,6 +1,5 @@
 const std = @import("std");
-const posix = std.posix;
-const net = std.net;
+const sys = @import("sys.zig");
 const log = std.log.scoped(.at);
 
 pub const AtError = error{
@@ -54,26 +53,17 @@ pub fn send(cmd: []const u8) AtError!AtResponse {
 }
 
 pub fn sendWithTimeout(cmd: []const u8, timeout_s: u32) AtError!AtResponse {
-    const addr = net.Address.initIp4(modem_ip, modem_port);
-
-    const sock = posix.socket(posix.AF.INET, posix.SOCK.STREAM, 0) catch {
+    const sock = sys.Socket.open(std.posix.SOCK.STREAM) catch {
         return AtError.ConnectFailed;
     };
-    defer posix.close(sock);
+    defer sock.close();
 
     // Set send/recv timeout
-    const tv = posix.timeval{
-        .sec = @intCast(timeout_s),
-        .usec = 0,
-    };
-    posix.setsockopt(sock, posix.SOL.SOCKET, posix.SO.RCVTIMEO, std.mem.asBytes(&tv)) catch |e| {
-        log.warn("Failed to set RCVTIMEO: {s}", .{@errorName(e)});
-    };
-    posix.setsockopt(sock, posix.SOL.SOCKET, posix.SO.SNDTIMEO, std.mem.asBytes(&tv)) catch |e| {
-        log.warn("Failed to set SNDTIMEO: {s}", .{@errorName(e)});
+    sock.setTimeouts(timeout_s) catch |e| {
+        log.warn("Failed to set socket timeouts: {s}", .{@errorName(e)});
     };
 
-    posix.connect(sock, &addr.any, addr.getOsSockLen()) catch {
+    sock.connect(modem_ip, modem_port) catch {
         return AtError.ConnectFailed;
     };
 
@@ -82,7 +72,7 @@ pub fn sendWithTimeout(cmd: []const u8, timeout_s: u32) AtError!AtResponse {
     const send_len = std.fmt.bufPrint(&send_buf, "{s}\r", .{cmd}) catch {
         return AtError.SendFailed;
     };
-    _ = posix.send(sock, send_len, 0) catch {
+    _ = sock.send(send_len) catch {
         return AtError.SendFailed;
     };
 
@@ -93,7 +83,7 @@ pub fn sendWithTimeout(cmd: []const u8, timeout_s: u32) AtError!AtResponse {
     var total: usize = 0;
 
     while (total < RECV_BUF_SIZE - 1) {
-        const n = posix.recv(sock, S.recv_buf[total..], 0) catch {
+        const n = sock.recv(S.recv_buf[total..]) catch {
             break;
         };
         if (n == 0) break;
@@ -130,21 +120,14 @@ pub fn sendWithTimeout(cmd: []const u8, timeout_s: u32) AtError!AtResponse {
 /// Calls cb for each complete line (between \r\n). Stops at OK or ERROR.
 /// Uses a small rolling buffer — no limit on total response size.
 pub fn sendStreaming(cmd: []const u8, timeout_s: u32, ctx: anytype, cb: fn ([]const u8, @TypeOf(ctx)) void) AtError!bool {
-    const addr = net.Address.initIp4(modem_ip, modem_port);
-
-    const sock = posix.socket(posix.AF.INET, posix.SOCK.STREAM, 0) catch {
+    const sock = sys.Socket.open(std.posix.SOCK.STREAM) catch {
         return AtError.ConnectFailed;
     };
-    defer posix.close(sock);
+    defer sock.close();
 
-    const tv = posix.timeval{
-        .sec = @intCast(timeout_s),
-        .usec = 0,
-    };
-    posix.setsockopt(sock, posix.SOL.SOCKET, posix.SO.RCVTIMEO, std.mem.asBytes(&tv)) catch {};
-    posix.setsockopt(sock, posix.SOL.SOCKET, posix.SO.SNDTIMEO, std.mem.asBytes(&tv)) catch {};
+    sock.setTimeouts(timeout_s) catch {};
 
-    posix.connect(sock, &addr.any, addr.getOsSockLen()) catch {
+    sock.connect(modem_ip, modem_port) catch {
         return AtError.ConnectFailed;
     };
 
@@ -153,7 +136,7 @@ pub fn sendStreaming(cmd: []const u8, timeout_s: u32, ctx: anytype, cb: fn ([]co
     const send_len = std.fmt.bufPrint(&send_buf, "{s}\r", .{cmd}) catch {
         return AtError.SendFailed;
     };
-    _ = posix.send(sock, send_len, 0) catch {
+    _ = sock.send(send_len) catch {
         return AtError.SendFailed;
     };
 
@@ -163,7 +146,7 @@ pub fn sendStreaming(cmd: []const u8, timeout_s: u32, ctx: anytype, cb: fn ([]co
     var ok_result = false;
 
     while (true) {
-        const n = posix.recv(sock, buf[buf_len..], 0) catch break;
+        const n = sock.recv(buf[buf_len..]) catch break;
         if (n == 0) break;
         buf_len += n;
 

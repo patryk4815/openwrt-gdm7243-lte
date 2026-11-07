@@ -78,7 +78,7 @@ Packages will be in `bin/packages/*/gctd/`.
 
 #### 1. Build
 
-Requires [Zig](https://ziglang.org/) 0.15.2
+Requires [Zig](https://ziglang.org/) 0.17.0
 
 ```sh
 zig build -Dtarget=mipsel-linux-musl --release=small

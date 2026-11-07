@@ -1,4 +1,5 @@
 const std = @import("std");
+const sys = @import("sys.zig");
 
 const led_base = "/sys/class/leds/";
 
@@ -12,9 +13,9 @@ pub fn set(name: []const u8, on: bool) void {
     if (!enabled) return;
     var path_buf: [128]u8 = undefined;
     const path = std.fmt.bufPrint(&path_buf, "{s}{s}/brightness", .{ led_base, name }) catch return;
-    const file = std.fs.openFileAbsolute(path, .{ .mode = .write_only }) catch return;
+    const file = sys.File.open(path, .write) catch return;
     defer file.close();
-    _ = file.write(if (on) "255" else "0") catch {};
+    file.writeAll(if (on) "255" else "0") catch {};
 }
 
 pub fn setSignalBars(bars: u8) void {

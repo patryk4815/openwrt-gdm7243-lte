@@ -305,13 +305,13 @@ fn decodeBcdNumber(bcd: []const u8, digits: u8, toa: u8, out: *[32]u8, out_len: 
 fn decodeTimestamp(ts: []const u8, out: *[32]u8, out_len: *usize) void {
     if (ts.len < 7) return;
     // BCD swapped: YY/MM/DD HH:MM:SS
-    var fbs = std.io.fixedBufferStream(out);
-    const w = fbs.writer();
+    var fbs: std.Io.Writer = .fixed(out);
+    const w = &fbs;
     w.print("20{d:0>2}/{d:0>2}/{d:0>2} {d:0>2}:{d:0>2}:{d:0>2}", .{
         bcdSwap(ts[0]), bcdSwap(ts[1]), bcdSwap(ts[2]),
         bcdSwap(ts[3]), bcdSwap(ts[4]), bcdSwap(ts[5]),
     }) catch return;
-    out_len.* = fbs.pos;
+    out_len.* = fbs.end;
 }
 
 fn bcdSwap(b: u8) u8 {

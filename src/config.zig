@@ -1,4 +1,5 @@
 const std = @import("std");
+const sys = @import("sys.zig");
 
 pub const PdpType = enum {
     ip,
@@ -123,7 +124,7 @@ pub fn load(path: []const u8) Config {
     cfg.setApn("internet");
     cfg.setIface("lte");
 
-    const file = std.fs.openFileAbsolute(path, .{}) catch return cfg;
+    const file = sys.File.open(path, .read) catch return cfg;
     defer file.close();
 
     var buf: [4096]u8 = undefined;
