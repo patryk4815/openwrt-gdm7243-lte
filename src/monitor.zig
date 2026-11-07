@@ -44,13 +44,13 @@ fn updateSignal() void {
 
 fn updateRegistration() void {
     const status = commands.queryRegistration() catch {
-        led.set("green:internet", false);
+        led.set("green:wan", false);
         return;
     };
     const registered = status == .home or status == .roaming;
     const name = iface_buf[0..iface_len];
     const has_ip = exec(&.{ "ip", "addr", "show", "dev", name });
-    led.set("green:internet", registered and has_ip);
+    led.set("green:wan", registered and has_ip);
 }
 
 fn exec(argv: []const []const u8) bool {
