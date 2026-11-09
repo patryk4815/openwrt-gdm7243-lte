@@ -1,7 +1,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=gctd
-PKG_VERSION:=1.2.1
+PKG_VERSION:=1.3.0
 PKG_RELEASE:=1
 PKG_LICENSE:=MIT
 PKG_MAINTAINER:=Patryk Sondej <patryk.sondej@gmail.com>

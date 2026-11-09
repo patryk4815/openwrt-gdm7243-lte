@@ -61,14 +61,25 @@ pub fn connectLte(cfg: *const config_mod.Config) ConnectError!void {
     return setupFromContext(cfg);
 }
 
+/// Connection details last successfully applied to the interface.
+/// Only touched from the main daemon thread.
+var applied: ?commands.ConnectionDetails = null;
+
+/// Configure the network interface and remember what was applied.
+fn applyNetwork(cfg: *const config_mod.Config, info: *const commands.ConnectionDetails) ConnectError!void {
+    applied = null;
+    switch (cfg.mode) {
+        .netifd => setupNetworkNetifd(cfg, info) catch return ConnectError.NetworkSetupFailed,
+        .ip => setupNetworkIp(cfg, info) catch return ConnectError.NetworkSetupFailed,
+    }
+    applied = info.*;
+}
+
 /// Get connection details from modem and configure network interface
 fn setupFromContext(cfg: *const config_mod.Config) ConnectError!void {
-    var info = commands.queryConnectionDetails(cfg.cid) catch return ConnectError.NoIpAssigned;
+    const info = commands.queryConnectionDetails(cfg.cid) catch return ConnectError.NoIpAssigned;
 
-    switch (cfg.mode) {
-        .netifd => setupNetworkNetifd(cfg, &info) catch return ConnectError.NetworkSetupFailed,
-        .ip => setupNetworkIp(cfg, &info) catch return ConnectError.NetworkSetupFailed,
-    }
+    try applyNetwork(cfg, &info);
 
     log.info("LTE connected: IP={s}/{d} GW={s} DNS={s},{s} MTU={d}", .{
         info.getIp(), info.prefix, info.getGateway(),
@@ -84,15 +95,43 @@ pub fn reactivateContext(cfg: *const config_mod.Config) ConnectError!void {
     commands.activateContext(cfg.cid) catch return ConnectError.ActivationFailed;
     sys.sleepNs(std.time.ns_per_s);
 
-    var info = commands.queryConnectionDetails(cfg.cid) catch return ConnectError.NoIpAssigned;
+    const info = commands.queryConnectionDetails(cfg.cid) catch return ConnectError.NoIpAssigned;
 
-    switch (cfg.mode) {
-        .netifd => setupNetworkNetifd(cfg, &info) catch return ConnectError.NetworkSetupFailed,
-        .ip => setupNetworkIp(cfg, &info) catch return ConnectError.NetworkSetupFailed,
-    }
+    try applyNetwork(cfg, &info);
 
     log.info("PDP context reactivated: IP={s}/{d} GW={s}", .{
         info.getIp(), info.prefix, info.getGateway(),
+    });
+}
+
+/// Health check for an active context: re-read AT+CGCONTRDP and reconfigure
+/// the interface if the network assigned a different address/prefix/gateway/
+/// DNS/MTU (e.g. the modem silently re-established the default bearer).
+/// Also retries network setup if it never succeeded for this context.
+pub fn checkAddressChange(cfg: *const config_mod.Config) void {
+    // A transient AT failure is not an address change — retry next round.
+    const info = commands.queryConnectionDetails(cfg.cid) catch |e| {
+        log.debug("Address check: CGCONTRDP failed: {s}", .{@errorName(e)});
+        return;
+    };
+
+    if (applied) |*old| {
+        if (old.eql(&info)) return;
+        log.warn("Connection details changed: IP {s}/{d} -> {s}/{d}, GW {s} -> {s}, MTU {d} -> {d}", .{
+            old.getIp(),     old.prefix,      info.getIp(), info.prefix,
+            old.getGateway(), info.getGateway(), old.mtu,   info.mtu,
+        });
+    } else {
+        log.warn("Network not configured for active context, applying IP={s}/{d}", .{ info.getIp(), info.prefix });
+    }
+
+    applyNetwork(cfg, &info) catch |e| {
+        log.err("Reconfiguring network failed: {s}, will retry", .{@errorName(e)});
+        return;
+    };
+    log.info("Network reconfigured: IP={s}/{d} GW={s} DNS={s},{s} MTU={d}", .{
+        info.getIp(),   info.prefix,    info.getGateway(),
+        info.getDns1(), info.getDns2(), info.mtu,
     });
 }
 
@@ -353,6 +392,7 @@ fn exec(argv: []const []const u8) !void {
 /// Disconnect LTE
 pub fn disconnectLte(cfg: *const config_mod.Config) void {
     const iface = cfg.getIface();
+    applied = null;
 
     switch (cfg.mode) {
         .netifd => {

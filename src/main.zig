@@ -563,7 +563,7 @@ fn daemonMode(args: *std.process.Args.Iterator) void {
     setupAt(&cfg);
     keepalive.configure(cfg.modem_ip, cfg.keepalive_port, cfg.keepalive_interval_s);
     led.configure(cfg.leds_enabled);
-    monitor.configure(cfg.monitor_interval_s, cfg.getIface());
+    monitor.configure(cfg.monitor_interval_s, cfg.getDevice(), cfg.pdptype);
 
     // Install signal handlers for graceful shutdown
     const sa = std.posix.Sigaction{
@@ -648,6 +648,10 @@ fn daemonMode(args: *std.process.Args.Iterator) void {
                             log.err("Reconnection failed: {s}", .{@errorName(e2)});
                         };
                     };
+                } else {
+                    // 4. Context active — make sure the interface still has
+                    //    the address the network currently assigns
+                    connect.checkAddressChange(&cfg);
                 }
             },
             .searching => {
@@ -671,5 +675,7 @@ fn daemonMode(args: *std.process.Args.Iterator) void {
     keepalive.stop();
     monitor.stop();
     connect.disconnectLte(&cfg);
+    // The monitor thread no longer updates it; don't leave it lit after ifdown
+    led.set("green:wan", false);
     log.info("gctd stopped", .{});
 }

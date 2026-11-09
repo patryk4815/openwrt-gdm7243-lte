@@ -156,6 +156,17 @@ pub const ConnectionDetails = struct {
     pub fn getDns2(self: *const ConnectionDetails) []const u8 {
         return self.dns2[0..self.dns2_len];
     }
+
+    /// True if both describe the same network configuration.
+    pub fn eql(a: *const ConnectionDetails, b: *const ConnectionDetails) bool {
+        return a.is_ipv6 == b.is_ipv6 and
+            a.prefix == b.prefix and
+            a.mtu == b.mtu and
+            std.mem.eql(u8, a.getIp(), b.getIp()) and
+            std.mem.eql(u8, a.getGateway(), b.getGateway()) and
+            std.mem.eql(u8, a.getDns1(), b.getDns1()) and
+            std.mem.eql(u8, a.getDns2(), b.getDns2());
+    }
 };
 
 pub fn queryConnectionDetails(cid: u8) !ConnectionDetails {
@@ -619,4 +630,36 @@ fn ipv6MaskToPrefix(mask_str: []const u8) u8 {
         if (bits < 16) break;
     }
     return prefix;
+}
+
+fn testDetails(ip: []const u8, prefix: u8, gw: []const u8) ConnectionDetails {
+    var d = ConnectionDetails{ .prefix = prefix };
+    @memcpy(d.ip[0..ip.len], ip);
+    d.ip_len = ip.len;
+    @memcpy(d.gateway[0..gw.len], gw);
+    d.gateway_len = gw.len;
+    return d;
+}
+
+test "ConnectionDetails.eql detects changes" {
+    const a = testDetails("2a00:f41:18d7:ba80::37:3f57:cc01", 64, "fe80::37:3f57:cc40");
+    var b = testDetails("2a00:f41:18d7:ba80::37:3f57:cc01", 64, "fe80::37:3f57:cc40");
+    try std.testing.expect(a.eql(&b));
+
+    // garbage past the used length must not matter
+    b.ip[b.ip_len] = 'x';
+    try std.testing.expect(a.eql(&b));
+
+    const new_ip = testDetails("2a00:f41:18d7:bb00::1", 64, "fe80::37:3f57:cc40");
+    try std.testing.expect(!a.eql(&new_ip));
+
+    const new_prefix = testDetails("2a00:f41:18d7:ba80::37:3f57:cc01", 56, "fe80::37:3f57:cc40");
+    try std.testing.expect(!a.eql(&new_prefix));
+
+    const new_gw = testDetails("2a00:f41:18d7:ba80::37:3f57:cc01", 64, "fe80::1");
+    try std.testing.expect(!a.eql(&new_gw));
+
+    var new_mtu = testDetails("2a00:f41:18d7:ba80::37:3f57:cc01", 64, "fe80::37:3f57:cc40");
+    new_mtu.mtu = 1400;
+    try std.testing.expect(!a.eql(&new_mtu));
 }

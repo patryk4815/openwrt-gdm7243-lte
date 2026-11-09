@@ -73,7 +73,7 @@ pub fn logFn(
 pub const File = struct {
     fd: linux.fd_t,
 
-    pub const Mode = enum { read, write, create };
+    pub const Mode = enum { read, write, create, lock };
 
     pub fn open(path: []const u8, mode: Mode) !File {
         var path_z: [posix.PATH_MAX:0]u8 = undefined;
@@ -85,6 +85,7 @@ pub const File = struct {
             .read => .{ .ACCMODE = .RDONLY, .CLOEXEC = true },
             .write => .{ .ACCMODE = .WRONLY, .CLOEXEC = true },
             .create => .{ .ACCMODE = .WRONLY, .CLOEXEC = true, .CREAT = true, .TRUNC = true },
+            .lock => .{ .ACCMODE = .RDONLY, .CLOEXEC = true, .CREAT = true },
         };
         while (true) {
             const rc = linux.openat(linux.AT.FDCWD, &path_z, flags, 0o644);
@@ -127,6 +128,33 @@ pub const File = struct {
                 else => return error.WriteFailed,
             }
         }
+    }
+};
+
+/// Exclusive advisory lock (flock) on a lock file. Serializes holders across
+/// threads (each acquire opens its own file description) and across
+/// processes; the kernel drops it if the holder dies. If the lock file can't
+/// be opened, acquire() degrades to no locking rather than failing.
+pub const FileLock = struct {
+    file: ?File,
+
+    pub fn acquire(path: []const u8) FileLock {
+        const f = File.open(path, .lock) catch return .{ .file = null };
+        while (true) {
+            switch (linux.errno(linux.flock(f.fd, posix.LOCK.EX))) {
+                .SUCCESS => return .{ .file = f },
+                .INTR => continue,
+                else => {
+                    f.close();
+                    return .{ .file = null };
+                },
+            }
+        }
+    }
+
+    pub fn release(l: FileLock) void {
+        // Closing the last descriptor releases the flock.
+        if (l.file) |f| f.close();
     }
 };
 
@@ -207,7 +235,17 @@ pub fn exec(argv: []const []const u8) !?u8 {
 
 // ---------------------------------------------------------------- sockets
 
-pub const SocketError = error{ SocketFailed, ConnectFailed, SendFailed, RecvFailed };
+pub const SocketError = error{ SocketFailed, ConnectFailed, SendFailed, RecvFailed, SetSockOptFailed };
+
+/// struct __kernel_old_timeval ({long, long}), the layout SO_RCVTIMEO and
+/// SO_SNDTIMEO expect. Zig's linux.timeval is {isize, i64}: on 32-bit
+/// targets that puts padding where the kernel reads tv_usec, and the
+/// setsockopt fails with EDOM, leaving the socket without a timeout.
+const KernelOldTimeval = extern struct { sec: isize, usec: isize };
+
+comptime {
+    std.debug.assert(@sizeOf(KernelOldTimeval) == 2 * @sizeOf(usize));
+}
 
 pub const Socket = struct {
     fd: linux.fd_t,
@@ -223,15 +261,19 @@ pub const Socket = struct {
     }
 
     /// Set both receive and send timeouts.
-    pub fn setTimeouts(s: Socket, sec: u32) !void {
+    pub fn setTimeouts(s: Socket, sec: u32) SocketError!void {
         try s.setRecvTimeout(sec);
-        const tv = linux.timeval{ .sec = @intCast(sec), .usec = 0 };
-        try posix.setsockopt(s.fd, linux.SOL.SOCKET, linux.SO.SNDTIMEO, std.mem.asBytes(&tv));
+        try s.setTimeout(linux.SO.SNDTIMEO, sec);
     }
 
-    pub fn setRecvTimeout(s: Socket, sec: u32) !void {
-        const tv = linux.timeval{ .sec = @intCast(sec), .usec = 0 };
-        try posix.setsockopt(s.fd, linux.SOL.SOCKET, linux.SO.RCVTIMEO, std.mem.asBytes(&tv));
+    pub fn setRecvTimeout(s: Socket, sec: u32) SocketError!void {
+        try s.setTimeout(linux.SO.RCVTIMEO, sec);
+    }
+
+    fn setTimeout(s: Socket, opt: u32, sec: u32) SocketError!void {
+        const tv = KernelOldTimeval{ .sec = @intCast(sec), .usec = 0 };
+        const rc = linux.setsockopt(s.fd, linux.SOL.SOCKET, opt, std.mem.asBytes(&tv), @sizeOf(KernelOldTimeval));
+        if (failed(rc)) return error.SetSockOptFailed;
     }
 
     pub fn connect(s: Socket, ip: [4]u8, port: u16) SocketError!void {
@@ -284,4 +326,71 @@ fn inAddr(ip: [4]u8, port: u16) linux.sockaddr.in {
         .port = std.mem.nativeToBig(u16, port),
         .addr = @bitCast(ip),
     };
+}
+
+// ---------------------------------------------------------------- interfaces
+
+/// True if network device `dev` has an IPv4 address (SIOCGIFADDR fails with
+/// EADDRNOTAVAIL when it has none and ENODEV when the device doesn't exist).
+pub fn hasIpv4Addr(dev: []const u8) bool {
+    if (dev.len == 0 or dev.len >= linux.IFNAMESIZE) return false;
+    const sock = Socket.open(linux.SOCK.DGRAM) catch return false;
+    defer sock.close();
+    var ifr = std.mem.zeroes(linux.ifreq);
+    @memcpy(ifr.ifrn.name[0..dev.len], dev);
+    ifr.ifru.addr.family = linux.AF.INET;
+    return !failed(linux.ioctl(sock.fd, linux.SIOCGIFADDR, @intFromPtr(&ifr)));
+}
+
+/// True if network device `dev` has a usable (not tentative, not DAD-failed)
+/// global-scope IPv6 address, per /proc/net/if_inet6.
+pub fn hasGlobalIpv6Addr(dev: []const u8) bool {
+    if (dev.len == 0) return false;
+    const f = File.open("/proc/net/if_inet6", .read) catch return false;
+    defer f.close();
+
+    var buf: [512]u8 = undefined;
+    var len: usize = 0;
+    var eof = false;
+    while (!eof) {
+        const n = f.readAll(buf[len..]) catch return false;
+        eof = n < buf.len - len;
+        len += n;
+
+        var start: usize = 0;
+        while (std.mem.indexOfScalarPos(u8, buf[0..len], start, '\n')) |end| {
+            if (isUsableGlobalInet6(buf[start..end], dev)) return true;
+            start = end + 1;
+        }
+        if (start == 0 and len == buf.len) return false; // malformed: no newline
+        std.mem.copyForwards(u8, buf[0 .. len - start], buf[start..len]);
+        len -= start;
+    }
+    return false;
+}
+
+/// Parse one /proc/net/if_inet6 line:
+/// "<addr hex> <ifindex> <prefixlen> <scope> <flags> <ifname>" (all hex).
+fn isUsableGlobalInet6(line: []const u8, dev: []const u8) bool {
+    const IFA_F_DADFAILED = 0x08;
+    const IFA_F_TENTATIVE = 0x40;
+    var it = std.mem.tokenizeScalar(u8, line, ' ');
+    var fields: [6][]const u8 = undefined;
+    for (&fields) |*field| field.* = it.next() orelse return false;
+    if (!std.mem.eql(u8, fields[5], dev)) return false;
+    const scope = std.fmt.parseInt(u32, fields[3], 16) catch return false;
+    const flags = std.fmt.parseInt(u32, fields[4], 16) catch return false;
+    return scope == 0 and flags & (IFA_F_TENTATIVE | IFA_F_DADFAILED) == 0;
+}
+
+test "isUsableGlobalInet6" {
+    const t = std.testing;
+    try t.expect(isUsableGlobalInet6("2a0106c0000000000000000000000002 0b 40 00 80  wan.100", "wan.100"));
+    try t.expect(!isUsableGlobalInet6("2a0106c0000000000000000000000002 0b 40 00 80  wan.100", "wan"));
+    try t.expect(!isUsableGlobalInet6("fe80000000000000021122fffe334455 0b 40 20 80  wan.100", "wan.100"));
+    try t.expect(!isUsableGlobalInet6("2a0106c0000000000000000000000002 0b 40 00 c0  wan.100", "wan.100"));
+    try t.expect(!isUsableGlobalInet6("2a0106c0000000000000000000000002 0b 40 00 88  wan.100", "wan.100"));
+    try t.expect(isUsableGlobalInet6("2a0106c0000000000000000000000002 0b 40 00 200 wan.100", "wan.100"));
+    try t.expect(!isUsableGlobalInet6("00000000000000000000000000000001 01 80 10 80       lo", "lo"));
+    try t.expect(!isUsableGlobalInet6("garbage", "wan.100"));
 }

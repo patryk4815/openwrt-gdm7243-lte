@@ -38,6 +38,24 @@ pub const AtResponse = struct {
 
 const RECV_BUF_SIZE = 4096;
 
+/// The modem's AT server (/usr/lte/ipatc in the GDM7243 rootfs, started with
+/// `-p 7788`) serves one TCP client at a time: it keeps the client fd in a
+/// single global, calls accept() only when that global is 0, and its HCI
+/// thread writes every AT response to that global fd. A second connection
+/// completes the TCP handshake (listen backlog 10) but its command is not
+/// read until the current client disconnects, so the time spent queued
+/// counts against our socket timeouts.
+///
+/// AT commands come from the daemon's main loop, its monitor thread and
+/// separate `gctd` CLI processes (LuCI/rpcd), so one lock file serializes
+/// them on our side: waiting happens on the lock instead of inside a socket
+/// timeout. If the lock file can't be opened, commands are sent unserialized.
+///
+/// Caveat the lock can't fix: if a client gives up and disconnects before
+/// the modem answers, the late response is written to whichever client the
+/// modem accepts next.
+const LOCK_PATH = "/var/lock/gctd-at.lock";
+
 var modem_ip: [4]u8 = .{ 169, 254, 0, 1 };
 var modem_port: u16 = 7788;
 
@@ -47,12 +65,16 @@ pub fn configure(ip: [4]u8, port: u16) void {
 }
 
 /// Send AT command to modem, return response
-/// Uses a static buffer — not thread-safe without external locking
+/// Response points into a per-thread buffer, valid until the same thread
+/// sends the next command
 pub fn send(cmd: []const u8) AtError!AtResponse {
     return sendWithTimeout(cmd, 5);
 }
 
 pub fn sendWithTimeout(cmd: []const u8, timeout_s: u32) AtError!AtResponse {
+    const lock = sys.FileLock.acquire(LOCK_PATH);
+    defer lock.release();
+
     const sock = sys.Socket.open(std.posix.SOCK.STREAM) catch {
         return AtError.ConnectFailed;
     };
@@ -77,8 +99,10 @@ pub fn sendWithTimeout(cmd: []const u8, timeout_s: u32) AtError!AtResponse {
     };
 
     // Read response until OK or ERROR
+    // Per-thread buffer: the main loop and the monitor thread send AT
+    // commands concurrently, and the response is parsed after return.
     const S = struct {
-        var recv_buf: [RECV_BUF_SIZE]u8 = undefined;
+        threadlocal var recv_buf: [RECV_BUF_SIZE]u8 = undefined;
     };
     var total: usize = 0;
 
@@ -120,6 +144,9 @@ pub fn sendWithTimeout(cmd: []const u8, timeout_s: u32) AtError!AtResponse {
 /// Calls cb for each complete line (between \r\n). Stops at OK or ERROR.
 /// Uses a small rolling buffer — no limit on total response size.
 pub fn sendStreaming(cmd: []const u8, timeout_s: u32, ctx: anytype, cb: fn ([]const u8, @TypeOf(ctx)) void) AtError!bool {
+    const lock = sys.FileLock.acquire(LOCK_PATH);
+    defer lock.release();
+
     const sock = sys.Socket.open(std.posix.SOCK.STREAM) catch {
         return AtError.ConnectFailed;
     };
